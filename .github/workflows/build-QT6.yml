@@ -21,108 +21,66 @@ jobs:
   build:
     name: Build REG-linux QT6
     runs-on: ${{ matrix.os }}
-    container: reglinux/reglinux-build:latest
     outputs:
       qtversion: ${{ steps.compile_step.outputs.qtversion }}
       dorelease: ${{ false || steps.compile_step.outputs.dorelease }}
     strategy:
       matrix:
-        os: [ubuntu-latest, self-hosted]
-        platform: [bcm2711, bcm2712, h5, jh7110, k1, rk3288, rk3326, rk3399, rk3588, s905gen3, s922x, sm8250, asahi, x86_64, x86_64_v3]
-        exclude:
-          - os: ubuntu-latest
+        os: [ubuntu-24.04-arm]
+        platform: [bcm2711, bcm2712, h5, jh7110, k1, rk3288, rk3326, rk3399, rk3588, s905gen3, s922x, sm8250, x86_64, x86_64_v3]
+        include:
+          - os: self-hosted
             platform: asahi
-          - os: ubuntu-latest
-            platform: x86_64
-          - os: ubuntu-latest
-            platform: x86_64_v3
-          - os: self-hosted
-            platform: bcm2711
-          - os: self-hosted
-            platform: bcm2712
-          - os: self-hosted
-            platform: h5
-          - os: self-hosted
-            platform: jh7110
-          - os: self-hosted
-            platform: k1
-          - os: self-hosted
-            platform: rk3288
-          - os: self-hosted
-            platform: rk3326
-          - os: self-hosted
-            platform: rk3399
-          - os: self-hosted
-            platform: rk3588
-          - os: self-hosted
-            platform: s905gen3
-          - os: self-hosted
-            platform: s922x
-          - os: self-hosted
-            platform: sm8250
       fail-fast: false
     steps:
       - name: Compile ${{ matrix.platform }}
         id: compile_step
         shell: bash
         run: |
-          cat << EOF > free_some_space.sh
-          #!/bin/bash
-          cd "\$1"
-          find ./ -type f -not -path "*qt6*" -iname "*.o" -delete
-          ESCAPELOOP=0
-          while test "\$(df -BG --output=avail ./ | tail -1 | grep -o "[0-9]*" | head -1)" -lt 7 ; do
-            find ./ -mindepth 1 -maxdepth 1 -type d -not \( -iname "*headers*" -or -iname "*qt6*" \) -exec du -sk -- {} \; 2>/dev/null | sort -hr | head -1 | cut -f 2- | xargs -d "\\n" -I{} -n1 -rt -- find {} -type f -not \( -ipath "*config*" -or -iname ".stamp*" -or -iname ".br*" -iname ".files*" -or -iname "Makefile*" -or -iname "*autoconf*" -or -iname "*auto.conf*" -or -iname "CMakeLists*" \) -delete
-            ((ESCAPELOOP++))
-            [[ "\$ESCAPELOOP" -lt 10 ]] || break
-          done
-          EOF
-          chmod 755 free_some_space.sh
-          
           rm -rf ./REG-LINUX ./REG-QT6-COMPILED
           git clone --branch master "https://github.com/REG-Linux/REG-Linux.git" ./REG-LINUX
           cd REG-LINUX
           git submodule init
           git submodule update
-          rm -rf .git .github
+          rm -rf .git .github buildroot/.github buildroot/.gitlab
           
           # Merge buildroot patches
           CUSTOM_DIR=${GITHUB_WORKSPACE}/REG-LINUX/custom BUILDROOT_DIR=${GITHUB_WORKSPACE}/REG-LINUX/buildroot ${GITHUB_WORKSPACE}/REG-LINUX/scripts/linux/mergeToBR.sh
+          
+          # Create built output directory
+          mkdir -p "${GITHUB_WORKSPACE}/REG-QT6-COMPILED"
           
           # Version
           qtversion="$(grep -m 1 QT6_VERSION_MAJOR buildroot/package/qt6/qt6.mk | sed -e 's/.*=[ ]*//')$(grep -m 1 'QT6_VERSION ' buildroot/package/qt6/qt6.mk | sed -e 's/.*)//')"
           echo "qtversion=${qtversion}" >> "$GITHUB_OUTPUT"
           echo "qtversion=${qtversion}"
           
-          case ${{ matrix.platform }} in
-            x86_64|x86_64_v3|asahi)
-              # Do not hijack pkg-generic.mk
-              ;;
-            *)
-              # After each package is compiled and installed, delete some of the already compiled files
-              sed -i '/stamp_installed\:/,/stamp_dircleaned\:/ s:^$:\t$\{GITHUB_WORKSPACE\}/free_some_space.sh $(BUILD_DIR)\n\tdu -h -s $(PWD)\n\tdf -Ph $(PWD)\n:' buildroot/package/pkg-generic.mk
-            ;;
-          esac
-          
-          # After each downloaded package is extracted, delete older and keep latest 3
-          sed -i 's:(TAR_OPTIONS) -:(TAR_OPTIONS) - \&\& find \$\$(DL_DIR) -mindepth 1 -maxdepth 1 -type d -printf "%T\@\\t%p\\n" | sort -g | head -n -3 | cut -f 2- | xargs -r rm -rfv :' buildroot/package/pkg-generic.mk
-          
-          # Disable CCACHE and BR2_PER_PACKAGE_DIRECTORIES
-          sed -i "/BR2_CCACHE/d" configs/reglinux-board.common
-          sed -i "/BR2_PER_PACKAGE_DIRECTORIES/d" configs/* Makefile
-          
-          # Enable the flag to build QT6 from source
-          sed -i s/#BR2_PACKAGE_REGLINUX_QT6=y/BR2_PACKAGE_REGLINUX_QT6=y/ configs/reglinux-board.common
-          sed -i s/#BR2_PACKAGE_REGLINUX_QT6_BUILD_FROM_SOURCE=y/BR2_PACKAGE_REGLINUX_QT6_BUILD_FROM_SOURCE=y/ configs/reglinux-board.common
-          sed -i s/#BR2_PACKAGE_QT6BASE_DEFAULT_QPA=\"wayland\"/BR2_PACKAGE_QT6BASE_DEFAULT_QPA=\"wayland\"/ configs/reglinux-board.common
-          
-          # Create built output directory
-          mkdir -p "${GITHUB_WORKSPACE}/REG-QT6-COMPILED"
-          
           # Get file if already released and avoid compiling again
           wget -q -nd -P "${GITHUB_WORKSPACE}/REG-QT6-COMPILED" "https://github.com/${GITHUB_REPOSITORY}/releases/download/${qtversion}/reglinux-qt6-${qtversion}-${{ matrix.platform }}.tar.gz" || ${{ true }}
-          if [[ ! -f "${GITHUB_WORKSPACE}/REG-QT6-COMPILED/reglinux-qt6-${qtversion}-${{ matrix.platform }}.tar.gz" ]]
+          if ! gzip -qt "${GITHUB_WORKSPACE}/REG-QT6-COMPILED/reglinux-qt6-${qtversion}-${{ matrix.platform }}.tar.gz"
           then
+            if [ "${{ matrix.platform }}" != "asahi" ]; then
+              sudo apt-get update
+              sudo apt-get -y remove '*azure*' '*firefox*' '*dotnet*' '*php*' '*cloud*'
+              sudo apt-get -y install llvm-dev libclang-dev build-essential
+              sudo apt-get -y autoremove
+              sudo apt-get -y clean
+              sudo rm -rf /var/lib/apt/lists/*
+              df -BG --output=avail ./
+            fi
+            
+            # After each downloaded package is extracted, delete older and keep latest 3
+            sed -i 's:(TAR_OPTIONS) -:(TAR_OPTIONS) - \&\& find \$\$(DL_DIR) -mindepth 1 -maxdepth 1 -type d -printf "%T\@\\t%p\\n" | sort -g | head -n -3 | cut -f 2- | xargs -r rm -rfv :' buildroot/package/pkg-generic.mk
+            
+            # Disable CCACHE and BR2_PER_PACKAGE_DIRECTORIES
+            sed -i "/BR2_CCACHE/d" configs/reglinux-board.common
+            sed -i "/BR2_PER_PACKAGE_DIRECTORIES/d" configs/* Makefile
+            
+            # Enable the flag to build QT6 from source
+            sed -i s/#BR2_PACKAGE_REGLINUX_QT6=y/BR2_PACKAGE_REGLINUX_QT6=y/ configs/reglinux-board.common
+            sed -i s/#BR2_PACKAGE_REGLINUX_QT6_BUILD_FROM_SOURCE=y/BR2_PACKAGE_REGLINUX_QT6_BUILD_FROM_SOURCE=y/ configs/reglinux-board.common
+            sed -i s/#BR2_PACKAGE_QT6BASE_DEFAULT_QPA=\"wayland\"/BR2_PACKAGE_QT6BASE_DEFAULT_QPA=\"wayland\"/ configs/reglinux-board.common
+            
             # Build
             ${GITHUB_WORKSPACE}/REG-LINUX/configs/createDefconfig.sh ${GITHUB_WORKSPACE}/REG-LINUX/configs/reglinux-${{ matrix.platform }}
             CCACHE_DISABLE=1 make BR2_EXTERNAL=${GITHUB_WORKSPACE}/REG-LINUX -C ${GITHUB_WORKSPACE}/REG-LINUX/buildroot reglinux-${{ matrix.platform }}_defconfig
