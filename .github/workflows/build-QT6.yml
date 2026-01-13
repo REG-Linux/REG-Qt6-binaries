@@ -158,9 +158,14 @@ jobs:
             jobsandload="-j$(( $(nproc) - 1 ))"
             PARALLEL_BUILD=n DEBUG_BUILD=n CCACHE_DISABLE=1 make ${jobsandload} PKG=reglinux-qt6 ${{ matrix.target }}-pkg || {
               echo "Retrying build after failure..."
-              sleep 60
+              sleep 180
               cd "${{ github.workspace }}"
-              PARALLEL_BUILD=n DEBUG_BUILD=n CCACHE_DISABLE=1 make ${jobsandload} PKG=reglinux-qt6 ${{ matrix.target }}-pkg
+              PARALLEL_BUILD=n DEBUG_BUILD=n CCACHE_DISABLE=1 make ${jobsandload} PKG=reglinux-qt6 ${{ matrix.target }}-pkg || {
+                echo "Retrying build after failure..."
+                sleep 360
+                cd "${{ github.workspace }}"
+                PARALLEL_BUILD=n DEBUG_BUILD=n CCACHE_DISABLE=1 make ${jobsandload} PKG=reglinux-qt6 ${{ matrix.target }}-pkg
+              }
             }
             
             # Create package
