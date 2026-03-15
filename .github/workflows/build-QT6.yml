@@ -75,7 +75,7 @@ jobs:
           remove-docker-images: true
 
       - name: Login to GHCR
-        uses: docker/login-action@v3.6.0
+        uses: docker/login-action@v4.0.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -185,11 +185,18 @@ jobs:
       - name: Upload Artifacts
         if: ${{ steps.compile_step.outputs.dorelease == 'true' && ! cancelled() }}
         id: upload_artifacts
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: reglinux-qt6-${{ steps.compile_step.outputs.qtversion }}-${{ matrix.cpu }}
           compression-level: 0
           path: reglinux-qt6-${{ steps.compile_step.outputs.qtversion }}-*
+
+      - name: Upload full-build.log on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: full-build-log-${{ matrix.target }}
+          path: ${{ github.workspace }}/output/${{ matrix.target }}/build/full-build.log
 
   create_release:
     name: Create release
