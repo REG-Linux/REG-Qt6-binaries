@@ -99,7 +99,7 @@ jobs:
           git config --local user.password ${{ github.token }}
           
           # Merge buildroot patches
-          CUSTOM_DIR=${{ github.workspace }}/custom BUILDROOT_DIR=${{ github.workspace }}/buildroot ${{ github.workspace }}/scripts/linux/mergeToBR.sh
+          CUSTOM_DIR=${{ github.workspace }}/custom BUILDROOT_DIR=${{ github.workspace }}/buildroot ${{ github.workspace }}/scripts/buildroot/mergeToBR.sh
           
           # Version
           qtversion="$(grep -m 1 QT6_VERSION_MAJOR buildroot/package/qt6/qt6.mk | sed -e 's/.*=[ ]*//')$(grep -m 1 'QT6_VERSION ' buildroot/package/qt6/qt6.mk | sed -e 's/.*)//')"
