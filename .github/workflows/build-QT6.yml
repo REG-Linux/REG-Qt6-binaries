@@ -139,13 +139,7 @@ jobs:
             else
               echo "toolchain-${{ matrix.cpu }}-${cacheHASHshort}.tar.xz not found"
               jobsandload="-j$(( $(nproc) - 1 ))"
-              # Build with 2 trials in case of download failure that sometimes happens
-              PARALLEL_BUILD=n DEBUG_BUILD=n CCACHE_DISABLE=1 make ${jobsandload} PKG=alsa-lib ${{ matrix.target }}-pkg || {
-                echo "Retrying build after failure..."
-                sleep 60
-                cd "${{ github.workspace }}"
-                PARALLEL_BUILD=n DEBUG_BUILD=n CCACHE_DISABLE=1 make ${jobsandload} PKG=alsa-lib ${{ matrix.target }}-pkg
-              }
+              PARALLEL_BUILD=n DEBUG_BUILD=n CCACHE_DISABLE=1 make ${jobsandload} PKG=alsa-lib ${{ matrix.target }}-pkg
               
               XZ_OPT=-9 tar --ignore-failed-read -cJf "toolchain-${{ matrix.cpu }}-${cacheHASHshort}.tar.xz" output/
               gh release delete toolchain-${{ matrix.cpu }} --cleanup-tag -y --repo REG-Linux/REG-llvm-binaries || :
@@ -154,19 +148,8 @@ jobs:
               rm "toolchain-${{ matrix.cpu }}-${cacheHASHshort}.tar.xz"
             fi
             
-            # Build with 2 trials in case of download failure that sometimes happens
             jobsandload="-j$(( $(nproc) - 1 ))"
-            PARALLEL_BUILD=n DEBUG_BUILD=n CCACHE_DISABLE=1 make ${jobsandload} PKG=reglinux-qt6 ${{ matrix.target }}-pkg || {
-              echo "Retrying build after failure..."
-              sleep 180
-              cd "${{ github.workspace }}"
-              PARALLEL_BUILD=n DEBUG_BUILD=n CCACHE_DISABLE=1 make ${jobsandload} PKG=reglinux-qt6 ${{ matrix.target }}-pkg || {
-                echo "Retrying build after failure..."
-                sleep 360
-                cd "${{ github.workspace }}"
-                PARALLEL_BUILD=n DEBUG_BUILD=n CCACHE_DISABLE=1 make ${jobsandload} PKG=reglinux-qt6 ${{ matrix.target }}-pkg
-              }
-            }
+            PARALLEL_BUILD=n DEBUG_BUILD=n CCACHE_DISABLE=1 make ${jobsandload} PKG=reglinux-qt6 ${{ matrix.target }}-pkg
             
             # Create package
             cd "${{ github.workspace }}/output/${{ matrix.target }}" || exit 1
