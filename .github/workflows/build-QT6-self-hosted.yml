@@ -20,12 +20,20 @@ env:
 jobs:
   build:
     name: Build REG-linux QT6
-    outputs:
-      qtversion: ${{ steps.compile_step.outputs.qtversion }}
-      dorelease: ${{ steps.compile_step.outputs.dorelease }}
     runs-on: self-hosted
     strategy:
       matrix:
+        # One leg per CPU, not per board: reglinux-qt6.mk picks the prebuilt by
+        # CPU (REGLINUX_QT6_CPU), so the target named here is just a
+        # representative board and every other board sharing that CPU takes the
+        # same tarball. Keep this list in step with the table in
+        # REG-WIP/scripts/linux/prebuild/prebuild-qt6.sh.
+        #
+        # The 32-bit CPUs reglinux-qt6.mk also maps (arm1176jzf_s, cortex_a7,
+        # cortex_a9, cortex_a15_a7, jz4770) are absent on purpose: every package
+        # that selects BR2_PACKAGE_REGLINUX_QT6 is gated on BR2_ARCH_IS_64 /
+        # BR2_aarch64 / x86_64 in Config.in.emulators, so those boards never
+        # look for a tarball.
         cpu: [cortex_a17, cortex_a35, cortex_a53, cortex_a55, cortex_a72, cortex_a72_a53, cortex_a73_a53, cortex_a75_a55, cortex_a76, cortex_a76_a55, riscv, x86_64, x86_64_v3, saphira]
         include:
           - target: rk3288
@@ -59,7 +67,7 @@ jobs:
       fail-fast: false
     steps:
       - name: Login to GHCR
-        uses: docker/login-action@v4.0.0
+        uses: docker/login-action@v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -67,7 +75,7 @@ jobs:
 
       - name: Clone repository
         id: clone_step
-        uses: actions/checkout@v6.0.2
+        uses: actions/checkout@v7.0.1
         with:
           repository: REG-Linux/REG-WIP
           token: ${{ secrets.REG_TOKEN }}
@@ -139,23 +147,59 @@ jobs:
             PARALLEL_BUILD=n DEBUG_BUILD=n CCACHE_DISABLE=1 make ${jobsandload} PKG=reglinux-qt6 ${{ matrix.target }}-pkg
             
             # Create package
+            #
+            # The file list comes purely from buildroot's own per-package
+            # manifests (one "<pkg>,./path" line each). Do NOT add `find . |
+            # grep -i Qt` style sweeps here: a build/output tree is not the set
+            # of files a package installed, and name heuristics pull in files
+            # owned by other packages. That is how the LLVM tarballs ended up
+            # shipping pkgconf/python3/ccache/openssl, whose RUNPATHs then
+            # failed buildroot's check-host-rpath in every dependent build.
+            # $1 = list to write, $2.. = build dirs owning the files
+            collect_filelist() {
+              out="$1"; shift
+              : > "$out"
+              for d in "$@"; do
+                [ -d "$d" ] || continue
+                if [ -f "$d/.files-list-host.txt" ]; then
+                  cut -d ',' -f 2- "$d/.files-list-host.txt" | sed -e 's+^./+host/+' >> "$out"
+                fi
+                if [ -f "$d/.files-list-staging.txt" ]; then
+                  cut -d ',' -f 2- "$d/.files-list-staging.txt" | sed -e "s+^./+${staging}/+" >> "$out"
+                fi
+                if [ -f "$d/.files-list.txt" ]; then
+                  cut -d ',' -f 2- "$d/.files-list.txt" | sed -e 's+^./+target/+' >> "$out"
+                fi
+              done
+              sort -u -o "$out" "$out"
+              echo "$(wc -l < "$out") files in $out"
+            }
+
             cd "${{ github.workspace }}/output/${{ matrix.target }}" || exit 1
             staging="$(<"${{ github.workspace }}/output/${{ matrix.target }}/build/staging.dir")"
-            cat build/host-qt6*/.files-list-host.txt | cut -d ',' -f 2 | sed -e 's+\.\/+host\/+g' >qt6-host-files.txt
-            cat build/qt6*/.files-list-staging.txt | cut -d ',' -f 2 | sed -e "s+\.\/+${staging}\/+g" >qt6-staging-files.txt
-            cat build/qt6*/.files-list.txt | cut -d ',' -f 2 | sed -e 's+\.\/+target\/+g' >qt6-target-files.txt
-            cat qt6-host-files.txt qt6-staging-files.txt qt6-target-files.txt >filelist.txt
-            find . | grep /host/ | grep -i Qt | sed -e 's/^\.\///g' >>filelist.txt
-            find . | grep /target/ | grep Qt | sed -e 's/^\.\///g' >>filelist.txt
-            sort -o sortedfilelist.txt -u filelist.txt
-            XZ_OPT=-9 tar -cJf "${{ github.workspace }}/reglinux-qt6-${qtversion}-${{ matrix.cpu }}.tar.xz" --verbatim-files-from -T sortedfilelist.txt || :
+            # qt6* / host-qt6* cover every qt6 sub-package (qt6base,
+            # qt6declarative, qt6multimedia, qt6shadertools, qt6svg, qt6tools,
+            # qt6wayland, qt6websockets and their host counterparts). The
+            # reglinux-qt6 wrapper installs nothing of its own, so it is not
+            # listed here.
+            #
+            # The glob is exact because the runner starts from a fresh checkout
+            # and only ever builds PKG=reglinux-qt6, so build/ holds precisely
+            # REGLINUX_QT6_DEPENDENCIES' closure - qt6charts, which Config.in
+            # selects under BUILD_FROM_SOURCE, is never built here.
+            collect_filelist qt6-filelist.txt build/qt6* build/host-qt6*
+            if [ ! -s qt6-filelist.txt ]; then
+              echo "No qt6 manifests found - was QT6 really built from source?"
+              exit 1
+            fi
+            XZ_OPT=-9 tar -cJf "${{ github.workspace }}/reglinux-qt6-${qtversion}-${{ matrix.cpu }}.tar.xz" --verbatim-files-from -T qt6-filelist.txt || :
             echo "dorelease=true" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Upload Artifacts
         if: ${{ steps.compile_step.outputs.dorelease == 'true' && ! cancelled() }}
         id: upload_artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: reglinux-qt6-${{ steps.compile_step.outputs.qtversion }}-${{ matrix.cpu }}
           compression-level: 0
@@ -163,7 +207,7 @@ jobs:
 
       - name: Upload full-build.log on failure
         if: failure()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: full-build-log-${{ matrix.target }}
           path: ${{ github.workspace }}/output/${{ matrix.target }}/build/full-build.log
@@ -172,19 +216,47 @@ jobs:
     name: Create release
     runs-on: self-hosted
     needs: build
-    if: ${{ needs.build.outputs.dorelease == 'true' && ! cancelled() }}
+    if: ${{ !cancelled() }}
     steps:
+      - name: Clean stale artifacts from previous runs
+        run: rm -rf artifacts && mkdir -p artifacts
+
       - name: Download artifacts
         uses: actions/download-artifact@v8.0.1
         with:
-          pattern: reglinux-qt6-${{ needs.build.outputs.qtversion }}-*
-          path: ./
+          pattern: reglinux-qt6-*
+          path: artifacts
           merge-multiple: true
+
+      # A matrix job cannot aggregate a "did anything build?" flag: all 14 legs
+      # write the same job output and the last one to finish wins, so a leg that
+      # skipped (its asset is already released) would suppress the release. The
+      # artifacts are the aggregate - only legs that built something upload one -
+      # and the version is already in their file names.
+      - name: Decide whether there is anything to release
+        id: rel
+        run: |
+          shopt -s nullglob
+          files=(artifacts/reglinux-qt6-*.tar.xz)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "No new tarballs were built; nothing to release."
+            exit 0
+          fi
+          qtversion="$(basename "${files[0]}" | sed -nE 's/^reglinux-qt6-([0-9]+(\.[0-9]+)*)-.*\.tar\.xz$/\1/p')"
+          if [ -z "$qtversion" ]; then
+            echo "Could not parse the QT6 version from ${files[0]}"
+            exit 1
+          fi
+          echo "Releasing ${#files[@]} tarball(s) as ${qtversion}"
+          echo "qtversion=${qtversion}" >> "$GITHUB_OUTPUT"
+
       - name: Create release
-        uses: softprops/action-gh-release@v2.6.0
+        if: ${{ steps.rel.outputs.qtversion != '' }}
+        uses: softprops/action-gh-release@v3.0.2
         with:
-          files: reglinux-qt6-${{ needs.build.outputs.qtversion }}-*
-          tag_name: ${{ needs.build.outputs.qtversion }}
+          files: artifacts/reglinux-qt6-${{ steps.rel.outputs.qtversion }}-*.tar.xz
+          tag_name: ${{ steps.rel.outputs.qtversion }}
           prerelease: false
+          make_latest: true
           generate_release_notes: true
-          name: QT6 binaries ${{ needs.build.outputs.qtversion }}
+          name: QT6 binaries ${{ steps.rel.outputs.qtversion }}
