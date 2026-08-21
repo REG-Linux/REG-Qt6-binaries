@@ -114,11 +114,11 @@ jobs:
             # Disable CCACHE
             sed -i "/BR2_CCACHE/d" configs/reglinux-board.common
             
-            # After each package is installed, delete downloaded files
-            # sed -i '/stamp_installed\:/,/stamp_dircleaned\:/ s:^$:\trm -rfv "\$(\$(PKG)_DL_DIR)"\n:' buildroot/package/pkg-generic.mk
-            
-            # Hack needed to retrieve the proper staging name directory when packaging
-            sed -i '/stamp_staging_installed\:/,/stamp_images_installed\:/ s:^$:\techo "host/\$(GNU_TARGET_NAME)/sysroot" > "\$(BUILD_DIR)/staging.dir"\n:' buildroot/package/pkg-generic.mk
+            # The download cleanup the hosted workflow does (see
+            # ci/scripts/ci-free-space.mk there) is deliberately not done here:
+            # a self-hosted runner has the disk, and keeping dl/ makes reruns
+            # cheap. Nothing else is needed - sed'ing pkg-generic.mk for the
+            # staging directory name is gone too, see the packaging step below.
             
             # Enable the flags to build QT6 from source
             sed -i s/#BR2_PACKAGE_REGLINUX_QT6=y/BR2_PACKAGE_REGLINUX_QT6=y/ configs/reglinux-board.common
@@ -176,7 +176,18 @@ jobs:
             }
 
             cd "${{ github.workspace }}/output/${{ matrix.target }}" || exit 1
-            staging="$(<"${{ github.workspace }}/output/${{ matrix.target }}/build/staging.dir")"
+            # STAGING_DIR is $(HOST_DIR)/$(GNU_TARGET_NAME)/sysroot and host/
+            # holds exactly one tuple directory, so the glob IS the tuple. The
+            # sed that used to write this into pkg-generic.mk had to go: that
+            # file is owned by custom/package/pkg-generic.mk.patch, and every
+            # `make <target>-*` goal depends on the `merge` target, so the next
+            # make re-ran mergeToBR.sh over the sed'ed file and aborted with
+            # "target file does not have expected MD5 checksum".
+            staging="$(printf '%s\n' host/*/sysroot | head -n 1)"
+            if [ ! -d "$staging" ]; then
+              echo "No staging directory under output/${{ matrix.target }}/host - was the toolchain built?"
+              exit 1
+            fi
             # qt6* / host-qt6* cover every qt6 sub-package (qt6base,
             # qt6declarative, qt6multimedia, qt6shadertools, qt6svg, qt6tools,
             # qt6wayland, qt6websockets and their host counterparts). The

@@ -97,6 +97,14 @@ jobs:
           token: ${{ secrets.REG_TOKEN }}
           submodules: true
 
+      # REG-WIP owns the workspace root and actions/checkout cleans its
+      # checkout path, so this repository - which carries the CI-only
+      # scripts/ci-free-space.mk - has to be checked out after it, beside it.
+      - name: Clone this repository
+        uses: actions/checkout@v7.0.1
+        with:
+          path: ci
+
       - name: Compile ${{ matrix.target }}
         id: compile_step
         env:
@@ -130,11 +138,22 @@ jobs:
             # Disable CCACHE
             sed -i "/BR2_CCACHE/d" configs/reglinux-board.common
             
-            # After each package is installed, delete downloaded files
-            sed -i '/stamp_installed\:/,/stamp_dircleaned\:/ s:^$:\trm -rfv "\$(\$(PKG)_DL_DIR)"\n:' buildroot/package/pkg-generic.mk
-            
-            # Hack needed to retrieve the proper staging name directory when packaging
-            sed -i '/stamp_staging_installed\:/,/stamp_images_installed\:/ s:^$:\techo "host/\$(GNU_TARGET_NAME)/sysroot" > "\$(BUILD_DIR)/staging.dir"\n:' buildroot/package/pkg-generic.mk
+            # After each package is installed, delete its downloaded files.
+            #
+            # Do NOT do this by sed'ing buildroot/package/pkg-generic.mk: that
+            # file is owned by custom/package/pkg-generic.mk.patch, and every
+            # `make <target>-*` goal depends on the `merge` target, so the next
+            # make re-runs mergeToBR.sh over the sed'ed file and aborts with
+            # "target file does not have expected MD5 checksum".
+            #
+            # local.mk is buildroot's own BR2_PACKAGE_OVERRIDE_FILE (default
+            # "$(CONFIG_DIR)/local.mk", i.e. output/<target>/local.mk). It is
+            # plain make, included before the package .mk files, so it can
+            # append a hook to GLOBAL_INSTRUMENTATION_HOOKS - pkg-generic.mk's
+            # documented per-step hook list. Nothing under buildroot/ changes,
+            # so the merge stays clean.
+            mkdir -p "output/${{ matrix.target }}"
+            cp ci/scripts/ci-free-space.mk "output/${{ matrix.target }}/local.mk"
             
             # Enable the flags to build QT6 from source
             sed -i s/#BR2_PACKAGE_REGLINUX_QT6=y/BR2_PACKAGE_REGLINUX_QT6=y/ configs/reglinux-board.common
@@ -158,6 +177,10 @@ jobs:
               echo "Toolchain cache created"
               rm "toolchain-${{ matrix.cpu }}-${cacheHASHshort}.tar.xz"
             fi
+            
+            # The toolchain cache tarball carries output/, so re-drop local.mk
+            # in case an older cached tree shipped one and overwrote ours.
+            cp ci/scripts/ci-free-space.mk "output/${{ matrix.target }}/local.mk"
             
             jobsandload="-j$(( $(nproc) - 1 ))"
             PARALLEL_BUILD=n DEBUG_BUILD=n CCACHE_DISABLE=1 make ${jobsandload} PKG=reglinux-qt6 ${{ matrix.target }}-pkg
@@ -192,7 +215,16 @@ jobs:
             }
 
             cd "${{ github.workspace }}/output/${{ matrix.target }}" || exit 1
-            staging="$(<"${{ github.workspace }}/output/${{ matrix.target }}/build/staging.dir")"
+            # STAGING_DIR is $(HOST_DIR)/$(GNU_TARGET_NAME)/sysroot and host/
+            # holds exactly one tuple directory, so the glob IS the tuple - no
+            # pkg-generic.mk hack needed to learn GNU_TARGET_NAME. (If you ever
+            # need the bare tuple: make BUILD_PROGRESS=n <target>-build
+            # CMD="printvars VARS=GNU_TARGET_NAME".)
+            staging="$(printf '%s\n' host/*/sysroot | head -n 1)"
+            if [ ! -d "$staging" ]; then
+              echo "No staging directory under output/${{ matrix.target }}/host - was the toolchain built?"
+              exit 1
+            fi
             # qt6* / host-qt6* cover every qt6 sub-package (qt6base,
             # qt6declarative, qt6multimedia, qt6shadertools, qt6svg, qt6tools,
             # qt6wayland, qt6websockets and their host counterparts). The
