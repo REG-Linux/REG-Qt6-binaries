@@ -128,8 +128,24 @@ jobs:
             # No toolchain cache here, unlike the hosted build-QT6.yml.
             # This workflow builds with the default PARALLEL_BUILD=y and
             # the cache tarballs on REG-llvm-binaries are built with PARALLEL_BUILD=n.
+            
+            # Keep Buildroot's downloads outside the workspace. actions/checkout
+            # runs with clean: true, so a workspace dl/ is wiped before every
+            # leg and all 14 of them re-download the same tarballs. This also
+            # fixes an outright failure: every container mounts
+            # -v $(DL_DIR):/build/buildroot/dl, and docker creates a missing
+            # bind-mount source as root:root, which the build - running as
+            # -u $(id -u):$(id -g) - then cannot write into:
+            #   mkdir: cannot create directory '/build/buildroot/dl/m4': Permission denied
+            # Export it rather than passing DL_DIR=... on the make command line:
+            # DL_DIR is not in the Makefile's WRAPPER_VARS, so a command-line
+            # assignment would be forwarded into the container through MAKEFLAGS
+            # and point Buildroot at a host path that does not exist there.
+            export DL_DIR="${HOME}/reglinux-dl"
+            mkdir -p "$DL_DIR"
+            
             make ${{ matrix.target }}-clean
-            make PKG=reglinux-qt6 ${{ matrix.target }}-pkg DEBUG_BUILD=n CCACHE_DISABLE=1
+            DEBUG_BUILD=n CCACHE_DISABLE=1 make PKG=reglinux-qt6 ${{ matrix.target }}-pkg
             
             # Create package
             # $1 = list to write, $2.. = build dirs owning the files
