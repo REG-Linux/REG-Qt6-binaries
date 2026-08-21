@@ -125,50 +125,46 @@ jobs:
             sed -i s/#BR2_PACKAGE_REGLINUX_QT6_BUILD_FROM_SOURCE=y/BR2_PACKAGE_REGLINUX_QT6_BUILD_FROM_SOURCE=y/ configs/reglinux-board.common
             sed -i s/#BR2_PACKAGE_QT6BASE_DEFAULT_QPA=\"wayland\"/BR2_PACKAGE_QT6BASE_DEFAULT_QPA=\"wayland\"/ configs/reglinux-board.common
             
-            # Use cached toolchain if available from REG-Linux/REG-llvm-binaries
-            cacheHASHshort="${{ hashFiles('custom/package/*llvm*/**', '.gitmodules') }}"
-            cacheHASHshort="${cacheHASHshort:0:7}"
-            if curl -s -L "https://github.com/REG-Linux/REG-llvm-binaries/releases/download/toolchain-${{ matrix.cpu }}/toolchain-${{ matrix.cpu }}-${cacheHASHshort}.tar.xz" | tar -xJf - 2>/dev/null
-            then
-              echo "toolchain-${{ matrix.cpu }}-${cacheHASHshort}.tar.xz extracted"
-            else
-              echo "toolchain-${{ matrix.cpu }}-${cacheHASHshort}.tar.xz not found"
-              jobsandload="-j$(( $(nproc) - 1 ))"
-              PARALLEL_BUILD=n DEBUG_BUILD=n CCACHE_DISABLE=1 make ${jobsandload} PKG=alsa-lib ${{ matrix.target }}-pkg
-              
-              XZ_OPT=-9 tar --ignore-failed-read -cJf "toolchain-${{ matrix.cpu }}-${cacheHASHshort}.tar.xz" output/
-              gh release delete toolchain-${{ matrix.cpu }} --cleanup-tag -y --repo REG-Linux/REG-llvm-binaries || :
-              gh release create toolchain-${{ matrix.cpu }} --repo REG-Linux/REG-llvm-binaries --latest=false --title "Toolchain cache for ${{ matrix.cpu }} targets" "toolchain-${{ matrix.cpu }}-${cacheHASHshort}.tar.xz"
-              echo "Toolchain cache created"
-              rm "toolchain-${{ matrix.cpu }}-${cacheHASHshort}.tar.xz"
-            fi
-            
-            jobsandload="-j$(( $(nproc) - 1 ))"
-            PARALLEL_BUILD=n DEBUG_BUILD=n CCACHE_DISABLE=1 make ${jobsandload} PKG=reglinux-qt6 ${{ matrix.target }}-pkg
+            # No toolchain cache here, unlike the hosted build-QT6.yml.
+            # This workflow builds with the default PARALLEL_BUILD=y and
+            # the cache tarballs on REG-llvm-binaries are built with PARALLEL_BUILD=n.
+            make ${{ matrix.target }}-clean
+            make PKG=reglinux-qt6 ${{ matrix.target }}-pkg DEBUG_BUILD=n CCACHE_DISABLE=1
             
             # Create package
-            #
-            # The file list comes purely from buildroot's own per-package
-            # manifests (one "<pkg>,./path" line each). Do NOT add `find . |
-            # grep -i Qt` style sweeps here: a build/output tree is not the set
-            # of files a package installed, and name heuristics pull in files
-            # owned by other packages. That is how the LLVM tarballs ended up
-            # shipping pkgconf/python3/ccache/openssl, whose RUNPATHs then
-            # failed buildroot's check-host-rpath in every dependent build.
             # $1 = list to write, $2.. = build dirs owning the files
             collect_filelist() {
               out="$1"; shift
               : > "$out"
               for d in "$@"; do
                 [ -d "$d" ] || continue
+                # Every manifest line is "<pkgname>,./path", and <pkgname> is
+                # also the per-package directory name, so take it from the
+                # manifest instead of unpicking "<name>-<version>" out of the
+                # build directory (versions contain dashes too).
+                pkg=""
+                for m in "$d"/.files-list.txt "$d"/.files-list-host.txt "$d"/.files-list-staging.txt; do
+                  [ -s "$m" ] || continue
+                  pkg="$(head -n 1 "$m" | cut -d ',' -f 1)"
+                  break
+                done
+                # Every manifest empty: the package installed nothing.
+                [ -n "$pkg" ] || continue
+                if [ "$ppd" = y ]; then
+                  hostroot="per-package/$pkg/host"
+                  targetroot="per-package/$pkg/target"
+                else
+                  hostroot="host"
+                  targetroot="target"
+                fi
                 if [ -f "$d/.files-list-host.txt" ]; then
-                  cut -d ',' -f 2- "$d/.files-list-host.txt" | sed -e 's+^./+host/+' >> "$out"
+                  cut -d ',' -f 2- "$d/.files-list-host.txt" | sed -e "s+^./+${hostroot}/+" >> "$out"
                 fi
                 if [ -f "$d/.files-list-staging.txt" ]; then
-                  cut -d ',' -f 2- "$d/.files-list-staging.txt" | sed -e "s+^./+${staging}/+" >> "$out"
+                  cut -d ',' -f 2- "$d/.files-list-staging.txt" | sed -e "s+^./+${hostroot}/${stagingsub}/+" >> "$out"
                 fi
                 if [ -f "$d/.files-list.txt" ]; then
-                  cut -d ',' -f 2- "$d/.files-list.txt" | sed -e 's+^./+target/+' >> "$out"
+                  cut -d ',' -f 2- "$d/.files-list.txt" | sed -e "s+^./+${targetroot}/+" >> "$out"
                 fi
               done
               sort -u -o "$out" "$out"
@@ -176,18 +172,34 @@ jobs:
             }
 
             cd "${{ github.workspace }}/output/${{ matrix.target }}" || exit 1
-            # STAGING_DIR is $(HOST_DIR)/$(GNU_TARGET_NAME)/sysroot and host/
-            # holds exactly one tuple directory, so the glob IS the tuple. The
-            # sed that used to write this into pkg-generic.mk had to go: that
-            # file is owned by custom/package/pkg-generic.mk.patch, and every
-            # `make <target>-*` goal depends on the `merge` target, so the next
-            # make re-ran mergeToBR.sh over the sed'ed file and aborted with
-            # "target file does not have expected MD5 checksum".
-            staging="$(printf '%s\n' host/*/sysroot | head -n 1)"
-            if [ ! -d "$staging" ]; then
-              echo "No staging directory under output/${{ matrix.target }}/host - was the toolchain built?"
+            # With PARALLEL_BUILD=y each package installs into its own
+            # per-package/<pkg>/{host,target}; output/host and output/target
+            # stay empty because host-finalize/target-finalize never run for a
+            # `<target>-pkg` goal. Harvest from there and let tar strip the
+            # prefix back off, so the tarball keeps the same host/, target/ and
+            # <tuple>/sysroot/ layout either way. Keep the non-per-package
+            # branch working: reglinux-qt6.mk unpacks both the same.
+            if [ -d per-package ]; then
+              ppd=y
+              hostglob="per-package/*/host"
+            else
+              ppd=n
+              hostglob="host"
+            fi
+            # STAGING_DIR is $(HOST_DIR)/$(GNU_TARGET_NAME)/sysroot and a host
+            # tree holds exactly one tuple directory, so the glob IS the tuple.
+            # The sed that used to write this into pkg-generic.mk had to go:
+            # that file is owned by custom/package/pkg-generic.mk.patch, and
+            # every `make <target>-*` goal depends on the `merge` target, so the
+            # next make re-ran mergeToBR.sh over the sed'ed file and aborted
+            # with "target file does not have expected MD5 checksum".
+            stagingdir="$(printf '%s\n' $hostglob/*/sysroot | head -n 1)"
+            if [ ! -d "$stagingdir" ]; then
+              echo "No staging directory under output/${{ matrix.target }} - was the toolchain built?"
               exit 1
             fi
+            stagingsub="${stagingdir%/sysroot}"
+            stagingsub="${stagingsub##*/}/sysroot"
             # qt6* / host-qt6* cover every qt6 sub-package (qt6base,
             # qt6declarative, qt6multimedia, qt6shadertools, qt6svg, qt6tools,
             # qt6wayland, qt6websockets and their host counterparts). The
@@ -203,7 +215,14 @@ jobs:
               echo "No qt6 manifests found - was QT6 really built from source?"
               exit 1
             fi
-            XZ_OPT=-9 tar -cJf "${{ github.workspace }}/reglinux-qt6-${qtversion}-${{ matrix.cpu }}.tar.xz" --verbatim-files-from -T qt6-filelist.txt || :
+            # flags=rh keeps the rewrite to member names and hard-link
+            # targets; symlink targets (flag s, on by default) must stay as the
+            # package wrote them.
+            if [ "$ppd" = y ]; then
+              XZ_OPT=-9 tar -cJf "${{ github.workspace }}/reglinux-qt6-${qtversion}-${{ matrix.cpu }}.tar.xz" --transform='flags=rh;s|^per-package/[^/]*/||' --verbatim-files-from -T qt6-filelist.txt || :
+            else
+              XZ_OPT=-9 tar -cJf "${{ github.workspace }}/reglinux-qt6-${qtversion}-${{ matrix.cpu }}.tar.xz" --verbatim-files-from -T qt6-filelist.txt || :
+            fi
             echo "dorelease=true" >> "$GITHUB_OUTPUT"
           fi
 
