@@ -32,6 +32,58 @@ jobs:
         # same tarball. Keep this list in step with the table in
         # REG-WIP/scripts/linux/prebuild/prebuild-qt6.sh.
         #
+        # Picking a representative board is not arbitrary: the tarball inherits that
+        # board's ISA, toolchain and XORG7 state, and every board sharing the CPU label
+        # has to be able to load and execute the result. In priority order:
+        #
+        #   ISA dominates. An optional extension compiled in is an unconditional SIGILL
+        #   on a board without it. On RISC-V, k1 and k3 set BR2_RISCV_ISA_RVV
+        #   (-march=rv64imafdcv...) while jh7110 (sifive-u74) and th1520 (xt-c910) do
+        #   not, so a k1/k3-built tarball cannot run on jh7110/th1520. The reverse is
+        #   fine: base rv64gc code runs everywhere.
+        #
+        #   Toolchain next. Qt carries versioned GLIBCXX_3.4.xx requirements and
+        #   libstdc++ is only backward compatible, so build with the OLDEST GCC in the
+        #   group (riscv: jh7110/k3 are gcc15, k1/th1520 gcc16).
+        #
+        #   XORG7 last (from BR2_PACKAGE_REGLINUX_XWAYLAND, per board, not from
+        #   reglinux-board.common). With it on, libQt6Gui.so itself links libX11 - not
+        #   just libqxcb.so - so a board without libX11 cannot start ANY Qt app. Fatal,
+        #   not a skipped plugin. With it off the X boards merely lose the XCB platform
+        #   plugin and keep working under Wayland.
+        #
+        # riscv is the one group where no single board wins all three: the non-RVV
+        # boards (jh7110, th1520) both have XWAYLAND, and the boards without it (k1,
+        # k3) are RVV. ISA outranks the rest, so jh7110 stays - do NOT swap it for k3.
+        # The real fix, if a riscv board ever pulls reglinux-qt6, is to split the label
+        # the way reglinux-scummvm already does (riscv = jh7110/th1520, riscv_rvv =
+        # k1/k3), not to change the representative. Today nothing forces it: 7 of the 8
+        # consumers of reglinux-qt6 are gated to explicit x86_64/aarch64 SoC targets and
+        # the 8th (snes9x) needs BR2_PACKAGE_HAS_LIBGL, which those boards' GLES-only
+        # Imagination stack does not provide - verify that before relying on it.
+        # cortex_a35 and cortex_a55 are mixed only in XORG7, already the safe way round.
+        #
+        #   XORG7 (from BR2_PACKAGE_REGLINUX_XWAYLAND, per board, not from
+        #   reglinux-board.common) decides whether qt6base builds with FEATURE_xcb.
+        #   With it on, libQt6Gui.so itself links libX11 - not just libqxcb.so - so a
+        #   board without libX11 cannot start ANY Qt app. This is fatal, not a skipped
+        #   plugin. With it off the X boards merely lose the XCB platform plugin and
+        #   keep working under Wayland.
+        #
+        #   The toolchain cuts the other way: Qt carries versioned GLIBCXX_3.4.xx
+        #   requirements, and libstdc++ is only backward compatible, so a tarball built
+        #   with a newer GCC will not load on a board pinned to an older one.
+        #
+        # So the representative must be the LOWEST common denominator of its CPU group:
+        # oldest toolchain, and XORG7 off. riscv is the one mixed group - jh7110
+        # (gcc15, X) k3 (gcc15, no X) k1 (gcc16, no X) th1520 (gcc16, X) - where k3 is
+        # the correct pick and jh7110, the current one, is not. Left alone because no
+        # riscv board appears to pull reglinux-qt6 at all: 7 of its 8 consumers are
+        # gated to explicit x86_64/aarch64 SoC targets and the 8th (snes9x) needs
+        # BR2_PACKAGE_HAS_LIBGL, which those boards' GLES-only Imagination stack does
+        # not provide. Verify that before relying on it. cortex_a35 and cortex_a55 are
+        # mixed only in XORG7, and already the safe way round.
+        #
         # The 32-bit CPUs reglinux-qt6.mk also maps (arm1176jzf_s, cortex_a7,
         # cortex_a9, cortex_a15_a7, xburst) are absent on purpose: every package
         # that selects BR2_PACKAGE_REGLINUX_QT6 is gated on BR2_ARCH_IS_64 /
@@ -225,6 +277,18 @@ jobs:
               echo "No staging directory under output/${{ matrix.target }}/host - was the toolchain built?"
               exit 1
             fi
+            # reglinux-qt6/Config.in now selects BR2_PACKAGE_QT6MULTIMEDIA_FFMPEG, so
+            # qt6multimedia also ships plugins/multimedia/libffmpegmediaplugin.so. Without
+            # a backend it built libQt6Multimedia.so and no plugins at all, and every
+            # QMediaPlayer failed with "No QtMultimedia backends found" - the harvest was
+            # never at fault, there was simply nothing to harvest.
+            #
+            # That plugin links the board's ffmpeg and pulseaudio (libavcodec.so.61,
+            # libpulse.so.0 today). Neither belongs in this tarball - the board supplies
+            # both - but it does couple the tarball to REG-WIP's ffmpeg SONAME: bump ffmpeg
+            # to a new major and the plugin silently stops loading on every board still
+            # using an old tarball. Re-cut these tarballs when ffmpeg's major changes.
+            #
             # qt6* / host-qt6* cover every qt6 sub-package (qt6base,
             # qt6declarative, qt6multimedia, qt6shadertools, qt6svg, qt6tools,
             # qt6wayland, qt6websockets and their host counterparts). The
@@ -233,8 +297,9 @@ jobs:
             #
             # The glob is exact because the runner starts from a fresh checkout
             # and only ever builds PKG=reglinux-qt6, so build/ holds precisely
-            # REGLINUX_QT6_DEPENDENCIES' closure - qt6charts, which Config.in
-            # selects under BUILD_FROM_SOURCE, is never built here.
+            # REGLINUX_QT6_DEPENDENCIES' closure, and reglinux-qt6/Config.in
+            # selects exactly those same eight modules - it used to also select
+            # qt6charts, which nothing depended on and no tarball ever shipped.
             collect_filelist qt6-filelist.txt build/qt6* build/host-qt6*
             if [ ! -s qt6-filelist.txt ]; then
               echo "No qt6 manifests found - was QT6 really built from source?"
@@ -308,3 +373,43 @@ jobs:
           make_latest: true
           generate_release_notes: true
           name: QT6 binaries ${{ steps.rel.outputs.qtversion }}
+
+      # Keep the release list bounded: the three newest of each family this
+      # workflow publishes, older ones deleted along with their tags (the same
+      # --cleanup-tag idiom the toolchain cache already uses).
+      #
+      # The filter is an ALLOWLIST of the tags this workflow itself creates,
+      # never a denylist. toolchain-<cpu> caches, hand-made releases and older
+      # naming schemes cannot match these patterns, so they are never at risk.
+      # Pruning is scoped to the families actually released in this run.
+      - name: Prune old releases
+        if: ${{ steps.rel.outputs.qtversion != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if ! command -v gh >/dev/null 2>&1; then
+            echo "::warning::gh is not installed on this runner; skipping release pruning"
+            exit 0
+          fi
+          KEEP=3
+          prune() {
+            pattern="$1"
+            echo "== keeping the ${KEEP} newest releases matching ${pattern}"
+            # Newest first, restrict to this family, then drop the first KEEP.
+            # grep is allowed to match nothing, hence the || true.
+            doomed="$(gh release list --limit 200 --json tagName,createdAt \
+                        --jq 'sort_by(.createdAt) | reverse | .[].tagName' \
+                      | grep -E "${pattern}" | tail -n +$((KEEP + 1)) || true)"
+            if [ -z "${doomed}" ]; then
+              echo "   nothing to remove"
+              return 0
+            fi
+            printf '%s\n' "${doomed}" | while read -r tag; do
+              [ -n "${tag}" ] || continue
+              echo "   deleting ${tag}"
+              gh release delete "${tag}" --cleanup-tag --yes \
+                || echo "::warning::could not delete release ${tag}"
+            done
+          }
+          prune '^[0-9]+(\.[0-9]+)+$'
