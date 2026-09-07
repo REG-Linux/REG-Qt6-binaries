@@ -61,7 +61,12 @@ jobs:
         # consumers of reglinux-qt6 are gated to explicit x86_64/aarch64 SoC targets and
         # the 8th (snes9x) needs BR2_PACKAGE_HAS_LIBGL, which those boards' GLES-only
         # Imagination stack does not provide - verify that before relying on it.
-        # cortex_a35 and cortex_a55 are mixed only in XORG7, already the safe way round.
+        #
+        # cortex_a55 IS split, for the reason above: odroidc5 has XORG7 and builds
+        # pcsx2, which needs QtGui/private/qtx11extras_p.h, while rk3568/s905gen3/t527
+        # have no libX11. cortex_a35 is mixed too (rk3326 no X, s9gen4 X) but stays on
+        # one label - nothing on s9gen4 needs the XCB plugin, so the rk3326 build serves
+        # both.
         #
         #   XORG7 (from BR2_PACKAGE_REGLINUX_XWAYLAND, per board, not from
         #   reglinux-board.common) decides whether qt6base builds with FEATURE_xcb.
@@ -81,15 +86,15 @@ jobs:
         # riscv board appears to pull reglinux-qt6 at all: 7 of its 8 consumers are
         # gated to explicit x86_64/aarch64 SoC targets and the 8th (snes9x) needs
         # BR2_PACKAGE_HAS_LIBGL, which those boards' GLES-only Imagination stack does
-        # not provide. Verify that before relying on it. cortex_a35 and cortex_a55 are
-        # mixed only in XORG7, and already the safe way round.
+        # not provide. Verify that before relying on it. cortex_a55 is mixed in XORG7
+        # and split into two labels instead; cortex_a35 is mixed too but stays on one.
         #
         # The 32-bit CPUs reglinux-qt6.mk also maps (arm1176jzf_s, cortex_a7,
         # cortex_a9, cortex_a15_a7, xburst) are absent on purpose: every package
         # that selects BR2_PACKAGE_REGLINUX_QT6 is gated on BR2_ARCH_IS_64 /
         # BR2_aarch64 / x86_64 in Config.in.emulators, so those boards never
         # look for a tarball.
-        cpu: [cortex_a17, cortex_a35, cortex_a53, cortex_a55, cortex_a72, cortex_a72_a53, cortex_a73_a53, cortex_a75_a55, cortex_a76, cortex_a76_a55, riscv, x86_64, x86_64_v3, saphira]
+        cpu: [cortex_a17, cortex_a35, cortex_a53, cortex_a55, cortex_a55_x11, cortex_a72, cortex_a72_a53, cortex_a73_a53, cortex_a75_a55, cortex_a76, cortex_a76_a55, riscv, x86_64, x86_64_v3, saphira]
         include:
           - target: rk3288
             cpu: cortex_a17
@@ -99,6 +104,8 @@ jobs:
             cpu: cortex_a53
           - target: rk3568
             cpu: cortex_a55
+          - target: odroidc5
+            cpu: cortex_a55_x11
           - target: bcm2711
             cpu: cortex_a72
           - target: rk3399
