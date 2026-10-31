@@ -8,6 +8,13 @@ The Qt libraries in these tarballs are **shared libraries** (`libQt6*.so`) built
 **unmodified upstream Qt source**. You can rebuild them yourself and replace them (see
 [Rebuilding](#rebuilding)).
 
+**Exact source per release:** new releases also carry `reglinux-qt6-<version>-sources.tar`
+(the upstream Qt archives and every patch applied, as built) and, per tarball,
+`reglinux-qt6-<version>-<cpu>-legal-info.tar.xz` (full Buildroot configuration, package
+recipes, licence texts, manifest, and the commits and CI run it came from). Releases made
+before this was added carry only the tarballs; rerunning the workflow rebuilds any CPU whose
+`-legal-info` archive is missing.
+
 ## Corresponding source for release 6.10.3
 
 Download the exact upstream source from Qt and check the SHA-256:
@@ -47,13 +54,17 @@ Buildroot package metadata for the version above:
 | qtshadertools | GPL-2.0 or LGPL-3.0 or GPL-3.0; Apache-2.0 or MIT (SPIRV-Cross) |
 | qtsvg | GPL-2.0-or-later or LGPL-3.0; GPL-3.0 with exception for tools |
 | qttools | LGPL-3.0 or GPL-3.0 or GPL-2.0; GPL-3.0 with Qt exception for tools |
-| qtwayland | LGPL-3.0 or GPL-2.0 or GPL-3.0 for the client; **GPL-3.0 only for the Wayland Compositor module** |
+| qtwayland | LGPL-3.0 or GPL-2.0 or GPL-3.0 (client only; the GPL-3.0-only Wayland Compositor is not built) |
 | qtwebsockets | LGPL-3.0 or GPL-2.0 or GPL-3.0 |
 
 Where Qt offers a library under the LGPL, it is distributed here under the LGPL. The Qt Wayland
-Compositor module, which Qt offers only under GPL-3.0 (or a commercial licence), is distributed
-here under the GPL-3.0. Full licence texts are in [`LICENSES/`](LICENSES/); the complete
-per-file notices are inside the upstream source archives above.
+Compositor module, which Qt offers only under GPL-3.0, is built with `FEATURE_wayland_server=OFF`
+and is not in these tarballs. The host tools (moc, rcc, uic and others) are under GPL-3.0 with
+the [Qt GPL Exception 1.0](LICENSES/Qt-GPL-exception-1.0.txt). Full licence texts are in
+[`LICENSES/`](LICENSES/); [`LICENSE`](LICENSE) at the top level is the plain LGPL-3.0 text, so
+GitHub can classify the repository. The complete per-file notices are inside the upstream source
+archives above. This repository's own workflows, scripts and `recipe/` are GPL-2.0-or-later, like
+REG-Linux ([`LICENSES/REG-Linux-COPYING.txt`](LICENSES/REG-Linux-COPYING.txt)).
 
 Because the libraries are shared, you may replace them with your own build of Qt, as the
 LGPL-3.0 requires. The tarballs contain Qt's own FFmpeg media plugin (`libffmpegmediaplugin.so`, part of Qt Multimedia), which
