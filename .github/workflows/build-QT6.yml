@@ -181,8 +181,15 @@ jobs:
           echo "qtversion=${qtversion}" >> "$GITHUB_OUTPUT"
           echo "qtversion=${qtversion}"
           
-          # Check if already released and avoid compiling again
-          if [ "$(curl -o /dev/null -s -Iw '%{http_code}' -L "https://github.com/${{ github.repository }}/releases/download/${qtversion}/reglinux-qt6-${qtversion}-${{ matrix.cpu }}.tar.xz")" -eq 200 ]; then
+          # Check if already released and avoid compiling again. The
+          # legal-info bundle counts as part of the release (and, on x86_64,
+          # the sources): a leg missing one is rebuilt, so they always match
+          # the tarball they describe.
+          rel="https://github.com/${{ github.repository }}/releases/download/${qtversion}"
+          have() { [ "$(curl -o /dev/null -s -Iw '%{http_code}' -L "$1")" -eq 200 ]; }
+          if have "${rel}/reglinux-qt6-${qtversion}-${{ matrix.cpu }}.tar.xz" \
+          && have "${rel}/reglinux-qt6-${qtversion}-${{ matrix.cpu }}-legal-info.tar.xz" \
+          && { [ "${{ matrix.cpu }}" != x86_64 ] || have "${rel}/reglinux-qt6-${qtversion}-sources.tar"; }; then
             echo "Already released, skipping build."
           else
             echo "Not yet released, proceeding with build"
@@ -313,6 +320,18 @@ jobs:
               exit 1
             fi
             XZ_OPT=-9 tar -cJf "${{ github.workspace }}/reglinux-qt6-${qtversion}-${{ matrix.cpu }}.tar.xz" --verbatim-files-from -T qt6-filelist.txt || :
+
+            # Qt is LGPL: each tarball ships with its exact source and recipe,
+            # from the same build tree. Every leg fetches the same source
+            # archives, so only x86_64 publishes them.
+            cd "${{ github.workspace }}"
+            wf="${{ github.workflow_ref }}"; wf="${wf#${{ github.repository }}/}"; wf="${wf%%@*}"
+            export CI_WORKFLOW_URL="${{ github.server_url }}/${{ github.repository }}/blob/${{ github.sha }}/${wf}"
+            export CI_RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            PARALLEL_BUILD=n DEBUG_BUILD=n CCACHE_DISABLE=1 ci/scripts/ci-legal-info.sh "${{ matrix.target }}" \
+              "reglinux-qt6-${qtversion}-${{ matrix.cpu }}-legal-info" \
+              "reglinux-qt6-${qtversion}-sources" 'qt6*' 'host-qt6*'
+            [ "${{ matrix.cpu }}" = x86_64 ] || rm -f "reglinux-qt6-${qtversion}-sources.tar"
             echo "dorelease=true" >> "$GITHUB_OUTPUT"
           fi
 
@@ -374,7 +393,16 @@ jobs:
         if: ${{ steps.rel.outputs.qtversion != '' }}
         uses: softprops/action-gh-release@v3.0.2
         with:
-          files: artifacts/reglinux-qt6-${{ steps.rel.outputs.qtversion }}-*.tar.xz
+          files: |
+            artifacts/reglinux-qt6-${{ steps.rel.outputs.qtversion }}-*.tar.xz
+            artifacts/reglinux-qt6-${{ steps.rel.outputs.qtversion }}-sources.tar
+          body: |
+            Qt ${{ steps.rel.outputs.qtversion }} built by REG-Linux, one tarball per CPU. The Qt libraries are under LGPL-3.0 (or GPL-2.0/GPL-3.0), the host tools under GPL-3.0 with the Qt exception. See [LICENSE](https://github.com/${{ github.repository }}/blob/HEAD/LICENSE).
+
+            Source and build recipe for every tarball in this release:
+
+            - `reglinux-qt6-${{ steps.rel.outputs.qtversion }}-sources.tar`: the upstream Qt source archives and every patch applied to them.
+            - `reglinux-qt6-${{ steps.rel.outputs.qtversion }}-<cpu>-legal-info.tar.xz`: for the matching tarball, the full Buildroot configuration, the package recipes, licence texts, a manifest of each module's version, licence and download site, and the commits and CI run it was built from.
           tag_name: ${{ steps.rel.outputs.qtversion }}
           prerelease: false
           make_latest: true
